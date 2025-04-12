@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hobbylos Suche</title>
+    <style>
+        /* Basic styling for the page */
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+            text-align: center; /* Center top-level elements */
+        }
+        /* Styling for the main chat container */
+        #chatbox {
+            max-width: 800px;
+            margin: auto; /* Center the chatbox */
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            height: 60vh; /* Adjusted height for better usability */
+            text-align: left; /* Align text inside chatbox to the left */
+        }
+        /* Styling for the message output area */
+        #output {
+            flex-grow: 1; /* Allow output area to take available space */
+            overflow-y: auto; /* Enable vertical scrolling */
+            padding: 15px;
+            border-bottom: 1px solid #ddd;
+            line-height: 1.6; /* Improve readability */
+        }
+        /* Remove top margin from the very first paragraph in output */
+         #output p:first-child, #output div:first-child {
+            margin-top: 0;
+        }
+        /* Styling for the input area container */
+        #input-area {
+            display: flex;
+            padding: 10px;
+            align-items: center; /* Vertically align input and buttons */
+            border-top: 1px solid #ddd; /* Separator line */
+            background-color: #f9f9f9; /* Slightly different background */
+        }
+        /* Styling for the text input field */
+        #query-input {
+            flex-grow: 1; /* Allow input to take available space */
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            margin-right: 10px;
+        }
+        /* Common styles for chat buttons */
+        .chat-button {
+            padding: 10px 15px;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-left: 5px; /* Space between buttons */
+            transition: background-color 0.3s ease; /* Smooth hover effect */
+        }
+        /* Styling for disabled buttons */
+        .chat-button:disabled {
+            background-color: #aaa;
+            cursor: not-allowed;
+        }
+        /* Specific style for the Send button */
+        #send-button {
+            background-color: #007bff; /* Blue */
+        }
+        /* Hover effect for the Send button when enabled */
+        #send-button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        /* Specific style for the Clear button */
+        #clear-button {
+             background-color: #dc3545; /* Red */
+        }
+        /* Hover effect for the Clear button when enabled */
+        #clear-button:hover:not(:disabled) {
+             background-color: #c82333;
+        }
+        /* Styling for status messages (e.g., connecting, connected) */
+        .status-message {
+            color: #666;
+            font-style: italic;
+            margin-bottom: 5px;
+            padding: 5px 0; /* Add some padding */
+        }
+        /* Styling for error messages */
+        .error-message {
+            color: #d9534f; /* Bootstrap danger color */
+            font-weight: bold;
+            margin-bottom: 5px;
+            padding: 5px 0;
+        }
+        /* Styling for the user's query display */
+        .user-query {
+            font-weight: bold;
+            color: #0056b3; /* Darker blue */
+            margin-bottom: 10px;
+            display: block; /* Ensure it takes its own line */
+            padding: 5px 0;
+        }
+        /* Styling for links within the chat output */
+         #output a {
+            color: #007bff;
+            text-decoration: none;
+            margin-right: 10px;
+            display: inline-block;
+            margin-bottom: 5px;
+        }
+        /* Hover effect for links */
+         #output a:hover {
+            text-decoration: underline;
+        }
+        /* Styling for Markdown content blocks (divs) */
+         #output div {
+            margin-bottom: 1em; /* Space below message blocks */
+        }
+        /* Ensure paragraphs within Markdown blocks have consistent spacing */
+         #output p {
+             margin-bottom: 0.5em; /* Space below paragraphs */
+        }
+         /* Ensure paragraphs within Markdown blocks don't have excessive top margin */
+         #output div > p:first-child {
+            margin-top: 0;
+         }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <h1>Hobbylos AI Bot</h1>
+    <p>Das Model hat noch keine Erinnerungen.</p>
+
+    <div id="chatbox">
+        <div id="output">
+            </div>
+        <div id="input-area">
+            <input type="text" id="query-input" placeholder="Deine Frage zu Hobbylos..." disabled>
+            <button id="send-button" class="chat-button" disabled>Senden</button>
+            <button id="clear-button" class="chat-button" disabled>Chat leeren</button>
+        </div>
+    </div>
+
+    <script>
+        // Get references to HTML elements
+        const output = document.getElementById('output');
+        const queryInput = document.getElementById('query-input');
+        const sendButton = document.getElementById('send-button');
+        const clearButton = document.getElementById('clear-button');
+
+        // WebSocket URL based on the current host
+        const wsUrl = `ws://${window.location.host}/ws`;
+        let socket; // Variable to hold the WebSocket object
+        let currentTaskOutput = null; // Element holding the currently streaming response
+        const scrollThreshold = 50; // Pixels from bottom to trigger auto-scroll
+
+        // Define status message texts
+        const connectingMessageText = "Verbindung wird hergestellt...";
+        const connectedMessageText = "Verbunden! Gib deine Frage ein.";
+        const chatClearedMessageText = "Chat geleert.";
+        const reconnectingMessageText = "Versuche neu zu verbinden...";
+        const connectionLostMessageText = "Verbindung verloren. Versuche neu zu verbinden...";
+        const websocketErrorMessageText = "WebSocket Fehler aufgetreten.";
+
+        // --- Helper Functions ---
+
+        /**
+         * Checks if the user is scrolled near the bottom of the chat output.
+         * @returns {boolean} True if scrolled near the bottom, false otherwise.
+         */
+        function isScrolledNearBottom() {
+            // Check if the scroll position is within the threshold of the bottom
+            return output.scrollHeight - output.scrollTop - output.clientHeight < scrollThreshold;
+        }
+
+        /**
+         * Scrolls the chat output to the very bottom.
+         */
+        function scrollToBottom() {
+            output.scrollTop = output.scrollHeight;
+        }
+
+        /**
+         * Adds a new element to the chat output and scrolls down conditionally.
+         * @param {HTMLElement} element The HTML element to add.
+         * @param {boolean} forceScroll If true, always scrolls to the bottom.
+         */
+        function addElementToOutput(element, forceScroll = false) {
+            const shouldScroll = forceScroll || isScrolledNearBottom();
+            output.appendChild(element);
+            if (shouldScroll) {
+                scrollToBottom();
+            }
+        }
+
+        /**
+         * Adds a status message paragraph to the chat output.
+         * @param {string} text The status message text.
+         * @param {boolean} forceScroll If true, always scrolls to the bottom.
+         */
+        function addStatusMessage(text, forceScroll = false) {
+            const statusElement = document.createElement('p');
+            statusElement.className = 'status-message';
+            statusElement.textContent = text;
+            addElementToOutput(statusElement, forceScroll);
+        }
+
+        /**
+         * Adds an error message paragraph to the chat output.
+         * @param {string} text The error message text.
+         * @param {boolean} forceScroll If true, always scrolls to the bottom.
+         */
+        function addErrorMessage(text, forceScroll = true) { // Default to force scroll for errors
+            const errorElement = document.createElement('p');
+            errorElement.className = 'error-message';
+            errorElement.textContent = text;
+            addElementToOutput(errorElement, forceScroll);
+        }
+
+        // --- WebSocket Logic ---
+
+        /**
+         * Establishes or re-establishes the WebSocket connection.
+         */
+        function connectWebSocket() {
+            // Show connecting message only if the output is empty or explicitly cleared
+            const isInitialConnection = !output.hasChildNodes() ||
+                                       (output.lastElementChild && output.lastElementChild.textContent === chatClearedMessageText);
+
+            if (isInitialConnection) {
+                output.innerHTML = ''; // Clear completely first
+                addStatusMessage(connectingMessageText, true); // Force scroll on initial connect
+            } else if (!socket || socket.readyState === WebSocket.CLOSED) {
+                 // Only add reconnecting message if actually attempting to reconnect
+                 addStatusMessage(reconnectingMessageText, true); // Force scroll on reconnect attempt
+            }
+
+            // Create the WebSocket connection
+            socket = new WebSocket(wsUrl);
+
+            // --- WebSocket Event Handlers ---
+
+            socket.onopen = function(event) {
+                console.log("WebSocket verbunden.");
+                // Remove any previous "Connecting..." or "Reconnecting..." messages if they exist
+                const statusMessages = output.querySelectorAll('.status-message');
+                statusMessages.forEach(msg => {
+                    if (msg.textContent === connectingMessageText || msg.textContent === reconnectingMessageText) {
+                        msg.remove();
+                    }
+                });
+
+                addStatusMessage(connectedMessageText, true); // Announce connection, force scroll
+                sendButton.disabled = false;
+                clearButton.disabled = false; // Enable clear button on connect
+                queryInput.disabled = false; // Ensure input is enabled
+                queryInput.focus(); // Focus input on connect/reconnect
+            };
+
+            socket.onmessage = function(event) {
+                const message = event.data;
+                console.log("Nachricht vom Server: ", message);
+
+                // Check if the initial "Connected!" message is the only thing present
+                const firstElement = output.firstElementChild;
+                const isOnlyConnectedMessage = firstElement &&
+                                               firstElement.classList.contains('status-message') &&
+                                               firstElement.textContent === connectedMessageText &&
+                                               output.childElementCount === 1;
+
+                // If it's the only message, remove it before adding the real content
+                if (isOnlyConnectedMessage && message !== "__ENDOFTASK__") {
+                   // output.innerHTML = ''; // Clear the "Connected" message - Optional, might cause flicker
+                   firstElement.remove(); // More targeted removal
+                }
+
+                if (message === "__ENDOFTASK__") {
+                    // Task finished: re-enable input and button
+                    sendButton.disabled = false;
+                    queryInput.disabled = false;
+                    queryInput.focus();
+                    // Check scroll position one last time after final content might be added
+                    if (currentTaskOutput && isScrolledNearBottom()) {
+                        scrollToBottom();
+                    }
+                    currentTaskOutput = null; // Reset the current task element
+                } else if (message.startsWith("Status:")) {
+                    // Display status updates from the server
+                    addStatusMessage(message); // Conditional scroll
+                } else if (message.startsWith("Warnung:") || message.startsWith("Fehler:")) {
+                    // Display warnings or errors
+                     const isWarning = message.startsWith("Warnung:");
+                     const errorElement = document.createElement('p');
+                     errorElement.className = isWarning ? 'status-message' : 'error-message'; // Use status style for warnings
+                     errorElement.textContent = message;
+                     addElementToOutput(errorElement, !isWarning); // Force scroll for errors, conditional for warnings
+                } else {
+                    // Handle normal message chunks (expected to be Markdown)
+                    const shouldScroll = isScrolledNearBottom(); // Check scroll BEFORE adding content
+
+                    if (!currentTaskOutput) {
+                        // Create a new div for this response block if one doesn't exist
+                        currentTaskOutput = document.createElement('div');
+                        // Add data attribute to store raw markdown for potential re-parsing if needed
+                        currentTaskOutput.dataset.rawMarkdown = "";
+                        output.appendChild(currentTaskOutput); // Add element first
+                    }
+
+                    // Append new message chunk to the raw markdown
+                    const currentMarkdown = (currentTaskOutput.dataset.rawMarkdown || "") + message;
+                    currentTaskOutput.dataset.rawMarkdown = currentMarkdown; // Update stored markdown
+
+                    // Parse the accumulated Markdown and update the innerHTML
+                    try {
+                        // Check if marked library is loaded and parse function exists
+                        if (typeof marked === 'object' && typeof marked.parse === 'function') {
+                            currentTaskOutput.innerHTML = marked.parse(currentMarkdown);
+                        } else {
+                            console.warn("Marked library not loaded or parse function missing. Displaying raw text.");
+                            // Fallback: append as plain text (might duplicate content if not careful)
+                            currentTaskOutput.textContent = currentMarkdown; // Safer fallback
+                        }
+                    } catch(e) {
+                        console.error("Markdown parsing error:", e);
+                        // Fallback: append the raw message chunk as text node in case of error
+                        currentTaskOutput.appendChild(document.createTextNode(message));
+                    }
+
+                    // Scroll down only if user was already near the bottom
+                    if (shouldScroll) {
+                        scrollToBottom();
+                    }
+                }
+            };
+
+            socket.onclose = function(event) {
+                console.log("WebSocket geschlossen:", event);
+                // Avoid adding duplicate "lost connection" messages if already present
+                if (!output.lastElementChild || !output.lastElementChild.textContent.includes("Verbindung verloren")) {
+                   addErrorMessage(connectionLostMessageText, true); // Use helper, force scroll
+                }
+                sendButton.disabled = true;
+                clearButton.disabled = true; // Disable clear button on disconnect
+                queryInput.disabled = true;
+                currentTaskOutput = null; // Reset streaming element
+                // Attempt to reconnect after a delay
+                setTimeout(connectWebSocket, 5000); // Try reconnecting every 5 seconds
+            };
+
+            socket.onerror = function(error) {
+                console.error("WebSocket Fehler:", error);
+                // Avoid adding duplicate error messages
+                if (!output.lastElementChild || !output.lastElementChild.textContent.includes("WebSocket Fehler")) {
+                   addErrorMessage(websocketErrorMessageText, true); // Use helper, force scroll
+                }
+                 // onclose will likely be called next, triggering the reconnect logic
+            };
+        }
+
+        // --- User Action Functions ---
+
+        /**
+         * Sends the user's query via the WebSocket.
+         */
+        function sendMessage() {
+            const query = queryInput.value.trim(); // Get and clean the input value
+            // Check if there's a query and the socket is open
+            if (query && socket && socket.readyState === WebSocket.OPEN) {
+
+                // Display the user's query in the chat
+                const userQueryElement = document.createElement('p');
+                userQueryElement.className = 'user-query';
+                userQueryElement.textContent = `Du: ${query}`;
+                addElementToOutput(userQueryElement, true); // Force scroll after user sends
+
+                console.log("Sende:", query);
+                socket.send(query); // Send the query over WebSocket
+                queryInput.value = ''; // Clear the input field
+                sendButton.disabled = true; // Disable send button while waiting for response
+                queryInput.disabled = true; // Disable input field
+                currentTaskOutput = null; // Reset streaming element for the new response
+
+            } else if (!query) {
+                 console.log("Keine Nachricht eingegeben.");
+                 // Optionally provide user feedback (e.g., shake the input box)
+            }
+            else {
+                console.log("Kann nicht senden: Socket nicht offen.");
+                addErrorMessage("Verbindung nicht bereit. Bitte warten.", true); // Inform user
+            }
+        }
+
+        /**
+         * Clears the chat output area.
+         */
+        function clearChat() {
+            console.log("Clearing chat...");
+            output.innerHTML = ''; // Clear content completely
+            addStatusMessage(chatClearedMessageText, true); // Add cleared message, force scroll
+            currentTaskOutput = null; // Reset streaming element
+            // Re-add the 'connected' message if the socket is still open
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                 addStatusMessage(connectedMessageText, true); // Force scroll
+            } else {
+                 // If disconnected, maybe show connecting/reconnecting message again
+                 if (!socket || socket.readyState === WebSocket.CLOSED) {
+                    addStatusMessage(reconnectingMessageText, true);
+                 } else if (socket.readyState === WebSocket.CONNECTING) {
+                    addStatusMessage(connectingMessageText, true);
+                 }
+            }
+            queryInput.focus(); // Focus input after clearing
+        }
+
+        // --- Event Listeners ---
+
+        // Send message when the Send button is clicked
+        sendButton.addEventListener('click', sendMessage);
+
+        // Send message when Enter key is pressed in the input field
+        queryInput.addEventListener('keypress', function(event) {
+            // Check if Enter key was pressed and the send button is enabled
+            if (event.key === 'Enter' && !sendButton.disabled) {
+                sendMessage();
+            }
+        });
+
+        // Clear chat when the Clear button is clicked
+        clearButton.addEventListener('click', clearChat);
+
+        // --- Initialization ---
+
+        // Initialize the WebSocket connection when the page loads
+        connectWebSocket();
+
+    </script>
+
+</body>
+</html>
